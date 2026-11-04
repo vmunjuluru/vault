@@ -332,3 +332,113 @@ module('Acceptance | Identity group details | root token', function (hooks) {
     assert.dom('[data-test-entity-create-link]').exists('add alias action is shown');
   });
 });
+
+// Page-scoped enrichment for default name sort (WO-015)
+module('Acceptance | Identity groups | page-scoped enrichment', function (hooks) {
+  setupApplicationTest(hooks);
+  setupMirage(hooks);
+
+  const GROUP_COUNT = 30;
+  // Groups route defaults pageSize to 10 (see groups/index.ts)
+  const PAGE_SIZE = 10;
+
+  function buildGroups(count) {
+    return Array.from({ length: count }, (_, i) => ({
+      id: `group-id-${String(i).padStart(2, '0')}`,
+      name: `group-${String(i).padStart(2, '0')}`,
+    }));
+  }
+
+  hooks.beforeEach(async function () {
+    await login();
+    this.groups = buildGroups(GROUP_COUNT);
+    this.groupReadIds = [];
+    this.capabilityPathBatches = [];
+
+    this.server.get('/identity/group/id', () => groupListResponse(this.groups));
+    this.server.get('/identity/group/id/:id', (_, req) => {
+      this.groupReadIds.push(req.params.id);
+      const group = this.groups.find((g) => g.id === req.params.id) ?? this.groups[0];
+      return {
+        data: { id: group.id, name: group.name, type: 'internal', alias: null, policies: [] },
+        request_id: 'test',
+      };
+    });
+    this.server.post('/sys/capabilities-self', (_, request) => {
+      const body = JSON.parse(request.requestBody || '{}');
+      this.capabilityPathBatches.push(body.paths || []);
+      const paths = body.paths || [];
+      const data = {};
+      paths.forEach((p) => {
+        data[p] = ['root'];
+      });
+      return { data, request_id: 'test' };
+    });
+  });
+
+  function latestGroupCapPaths(batches) {
+    for (let i = batches.length - 1; i >= 0; i--) {
+      const paths = batches[i] || [];
+      if (paths.some((p) => /identity\/group\/id\//.test(p))) {
+        return paths;
+      }
+    }
+    return [];
+  }
+
+  test('default sort enriches only the current page of groups', async function (assert) {
+    this.groupReadIds = [];
+    this.capabilityPathBatches = [];
+
+    await visit('/vault/access/identity/groups');
+
+    assert.strictEqual(
+      this.groupReadIds.length,
+      PAGE_SIZE,
+      `groupReadById called exactly ${PAGE_SIZE} times for page 1`
+    );
+    assert.ok(
+      this.groupReadIds.every((id) => id.startsWith('group-id-0')),
+      'page 1 groupReadById ids are from the first page slice'
+    );
+
+    const capPaths = latestGroupCapPaths(this.capabilityPathBatches);
+    const groupCapPaths = capPaths.filter((p) => /identity\/group\/id\//.test(p));
+    assert.strictEqual(
+      groupCapPaths.length,
+      PAGE_SIZE,
+      `capabilities.fetch includes paths for exactly ${PAGE_SIZE} groups`
+    );
+
+    assert.dom(GENERAL.pagination).exists('pagination control is visible');
+    assert.dom(GENERAL.paginationInfo).includesText(String(GROUP_COUNT), 'pagination total is N');
+  });
+
+  test('page 2 enrichment uses a different page slice', async function (assert) {
+    await visit('/vault/access/identity/groups');
+
+    this.groupReadIds = [];
+    this.capabilityPathBatches = [];
+
+    await click(GENERAL.nextPage);
+
+    assert.true(currentURL().includes('page=2'), 'navigated to page 2');
+    assert.strictEqual(
+      this.groupReadIds.length,
+      PAGE_SIZE,
+      `groupReadById called ${PAGE_SIZE} times for page 2`
+    );
+    assert.ok(
+      this.groupReadIds.includes('group-id-10'),
+      'page 2 enrichment includes first id of page 2'
+    );
+    assert.notOk(
+      this.groupReadIds.includes('group-id-00'),
+      'page 2 enrichment excludes page 1 ids'
+    );
+
+    const capPaths = latestGroupCapPaths(this.capabilityPathBatches);
+    const groupCapPaths = capPaths.filter((p) => /identity\/group\/id\//.test(p));
+    assert.strictEqual(groupCapPaths.length, PAGE_SIZE, 'page 2 capabilities scoped to P groups');
+  });
+});
