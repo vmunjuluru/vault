@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: BUSL-1.1
  */
 
-import { click, fillIn, currentURL, visit, waitFor } from '@ember/test-helpers';
+import { click, fillIn, currentURL, visit, waitFor, settled } from '@ember/test-helpers';
 import { module, test } from 'qunit';
 import { setupApplicationTest } from 'ember-qunit';
 import { setupMirage } from 'ember-cli-mirage/test-support';
@@ -11,6 +11,7 @@ import { login } from 'vault/tests/helpers/auth/auth-helpers';
 import { GENERAL } from 'vault/tests/helpers/general-selectors';
 import { runCmd, tokenWithPolicyCmd } from 'vault/tests/helpers/commands';
 import { WIZARD_ID_MAP } from 'vault/utils/constants/wizard';
+import sinon from 'sinon';
 
 const GROUP_ID_1 = '66638b30-a05e-560b-18cc-f43af766ce73';
 const GROUP_ID_2 = '78938b30-a85e-535b-14ac-f43af766ce73';
@@ -440,5 +441,90 @@ module('Acceptance | Identity groups | page-scoped enrichment', function (hooks)
     const capPaths = latestGroupCapPaths(this.capabilityPathBatches);
     const groupCapPaths = capPaths.filter((p) => /identity\/group\/id\//.test(p));
     assert.strictEqual(groupCapPaths.length, PAGE_SIZE, 'page 2 capabilities scoped to P groups');
+  });
+});
+
+// Page-navigation enrichment isolation (WO-016)
+module('Acceptance | /access/identity/groups | page navigation enrichment isolation', function (hooks) {
+  setupApplicationTest(hooks);
+  setupMirage(hooks);
+
+  const PAGE_SIZE = 10;
+  // 15 groups → page 2 has exactly 5 items under default pageSize
+  const GROUP_COUNT = 15;
+
+  hooks.beforeEach(async function () {
+    await login();
+
+    this.groups = Array.from({ length: GROUP_COUNT }, (_, i) => ({
+      id: `nav-group-id-${String(i).padStart(2, '0')}`,
+      name: `nav-group-${String(i).padStart(2, '0')}`,
+    }));
+
+    this.server.get('/identity/group/id', () => groupListResponse(this.groups));
+    this.server.get('/identity/group/id/:id', (_, req) => {
+      const group = this.groups.find((g) => g.id === req.params.id) ?? this.groups[0];
+      return {
+        data: { id: group.id, name: group.name, type: 'internal', alias: null, policies: [] },
+        request_id: 'test',
+      };
+    });
+    this.server.post('/sys/capabilities-self', () => ({ data: {}, request_id: 'test' }));
+  });
+
+  hooks.afterEach(function () {
+    this.readSpy?.restore();
+    this.fetchSpy?.restore();
+  });
+
+  test('it enriches only page-2 group IDs after navigation', async function (assert) {
+    const api = this.owner.lookup('service:api');
+    const capabilities = this.owner.lookup('service:capabilities');
+    this.readSpy = sinon.spy(api.identity, 'groupReadById');
+    this.fetchSpy = sinon.spy(capabilities, 'fetch');
+
+    await visit('/vault/access/identity/groups');
+    await settled();
+
+    const page1Ids = new Set(this.readSpy.getCalls().map((c) => c.args[0]));
+    assert.strictEqual(page1Ids.size, PAGE_SIZE, `page 1 reads exactly ${PAGE_SIZE} groups`);
+
+    this.readSpy.resetHistory();
+    this.fetchSpy.resetHistory();
+
+    await click(GENERAL.nextPage);
+    await settled();
+
+    assert.true(currentURL().includes('page=2'), 'URL contains page=2');
+
+    const page2Ids = this.readSpy.getCalls().map((c) => c.args[0]);
+    const expectedPage2Count = GROUP_COUNT - PAGE_SIZE; // 5
+    assert.strictEqual(
+      page2Ids.length,
+      expectedPage2Count,
+      `groupReadById called exactly ${expectedPage2Count} times on page 2`
+    );
+    assert.ok(
+      page2Ids.includes('nav-group-id-10'),
+      'page 2 includes first remaining group id'
+    );
+    assert.notOk(
+      page2Ids.some((id) => page1Ids.has(id)),
+      'page 2 groupReadById ids do not overlap page 1'
+    );
+
+    assert.ok(this.fetchSpy.called, 'capabilities.fetch called on page 2');
+    const paths = this.fetchSpy.lastCall.args[0] || [];
+    const groupPaths = paths.filter((p) => typeof p === 'string' && p.includes('identity/group/id/'));
+    const pathIds = groupPaths.map((p) => {
+      const m = p.match(/identity\/group\/id\/([^/]+)/);
+      return m ? m[1] : null;
+    }).filter(Boolean);
+
+    assert.strictEqual(pathIds.length, expectedPage2Count, 'capabilities paths scoped to page-2 count');
+    assert.notOk(
+      pathIds.some((id) => page1Ids.has(id)),
+      'capabilities.fetch paths contain zero page-1 group IDs'
+    );
   });
 });
