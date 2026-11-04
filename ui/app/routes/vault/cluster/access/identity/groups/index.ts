@@ -23,13 +23,18 @@ interface GroupKeyInfo {
 interface RouteParams extends Record<string, unknown> {
   page: string;
   pageSize: string;
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
 }
 
-export type GroupListItem = Pick<Group, 'id' | 'name' | 'type' | 'alias'> & {
-  canDelete: boolean;
-  canEdit: boolean;
-  canAddAlias: boolean;
-};
+type CapabilitiesEntry = { canDelete?: boolean; canUpdate?: boolean; canCreate?: boolean };
+
+export type GroupListItem = Pick<Group, 'id' | 'name'> &
+  Partial<Pick<Group, 'type' | 'alias'>> & {
+    canDelete?: boolean;
+    canEdit?: boolean;
+    canAddAlias?: boolean;
+  };
 
 export interface IdentityGroupsIndexModel {
   groups: GroupListItem[];
@@ -44,6 +49,46 @@ interface RouteController extends Controller {
   pageSize: number;
 }
 
+/**
+ * Replicates Page::ListView sortedModel (ui/lib/core/addon/components/page/list-view.ts):
+ * localeCompare with {numeric: true, sensitivity: 'base'}, nulls last.
+ */
+function sortItems<T extends Record<string, unknown>>(
+  items: T[],
+  sortBy: string | undefined,
+  sortOrder: 'asc' | 'desc' | undefined
+): T[] {
+  if (!sortBy) return items;
+
+  const direction = sortOrder ?? 'asc';
+  return [...items].sort((a, b) => {
+    const valA = a[sortBy];
+    const valB = b[sortBy];
+
+    if (valA == null && valB == null) return 0;
+    if (valA == null) return 1;
+    if (valB == null) return -1;
+
+    let result: number;
+    if (typeof valA === 'string' && typeof valB === 'string') {
+      result = valA.localeCompare(valB, undefined, { numeric: true, sensitivity: 'base' });
+    } else {
+      result = valA < valB ? -1 : valA > valB ? 1 : 0;
+    }
+
+    return direction === 'asc' ? result : -result;
+  });
+}
+
+function buildListViewConfig() {
+  const listViewConfig = { ...accessIdentityGroupsListViewConfig };
+  listViewConfig.breadcrumbs = [
+    { label: 'Vault', route: 'vault.cluster.dashboard', icon: 'vault' },
+    { label: 'Groups' },
+  ];
+  return listViewConfig;
+}
+
 export default class IdentityGroupsIndexRoute extends Route {
   @service declare readonly api: ApiService;
   @service declare readonly capabilities: CapabilitiesService;
@@ -56,7 +101,10 @@ export default class IdentityGroupsIndexRoute extends Route {
   };
 
   async model(params: RouteParams) {
-    const { page, pageSize } = params;
+    const page = Number(params.page) || 1;
+    const pageSize = Number(params.pageSize) || 10;
+    const sortBy = params.sortBy;
+    const sortOrder = params.sortOrder;
     // Creating a group is an update operation on identity/group (no existence check).
     const { canUpdate: canCreateGroup } = await this.capabilities.for('identityGroup');
 
@@ -64,28 +112,71 @@ export default class IdentityGroupsIndexRoute extends Route {
       const response = await this.api.identity.groupListById(IdentityApiGroupListByIdListEnum.TRUE);
       const items = this.api.keyInfoToArray<GroupKeyInfo>(response);
 
-      const capabilityPaths = items.flatMap((item) => [
-        this.capabilities.pathFor('identityCapabilities', { identityType: 'group', id: item.id }),
-        this.capabilities.pathFor('groupAlias'),
-      ]);
+      // name/id (and default unsorted) can page-scope enrichment; type/alias need full details (WO-014)
+      const usePageScopedEnrichment = !sortBy || sortBy === 'name' || sortBy === 'id';
 
-      const [capabilitiesMap, detailsResponses] = await Promise.all([
-        this.capabilities.fetch(capabilityPaths),
-        Promise.all(items.map((item) => this.api.identity.groupReadById(item.id))),
-      ]);
-
-      const detailsMap: Record<string, Partial<Pick<Group, 'type' | 'alias'>>> = {};
-      detailsResponses.forEach((res) => {
-        const d = (res as unknown as { data: Group })?.data;
-        if (d?.id) {
-          detailsMap[d.id] = { type: d.type, alias: d.alias };
-        }
-      });
+      let itemsToEnrich: GroupKeyInfo[];
+      if (usePageScopedEnrichment) {
+        const sorted = sortItems(
+          items as unknown as Record<string, unknown>[],
+          sortBy,
+          sortOrder
+        ) as unknown as GroupKeyInfo[];
+        const start = (page - 1) * pageSize;
+        itemsToEnrich = sorted.slice(start, start + pageSize);
+      } else {
+        itemsToEnrich = items;
+      }
 
       const groupAliasPath = this.capabilities.pathFor('groupAlias');
-      const groupAliasCapabilities = capabilitiesMap[groupAliasPath];
+      let capabilitiesMap: Record<string, CapabilitiesEntry> = {};
+      const detailsMap: Record<string, Partial<Pick<Group, 'type' | 'alias'>>> = {};
 
+      if (itemsToEnrich.length > 0) {
+        const capabilityPaths = [
+          groupAliasPath,
+          ...itemsToEnrich.map((item) =>
+            this.capabilities.pathFor('identityCapabilities', { identityType: 'group', id: item.id })
+          ),
+        ];
+
+        const [fetchedCapabilities, detailsResponses] = await Promise.all([
+          this.capabilities.fetch(capabilityPaths),
+          Promise.all(
+            itemsToEnrich.map(async (item) => {
+              try {
+                return await this.api.identity.groupReadById(item.id);
+              } catch {
+                // Graceful: render item without detail data rather than failing the page
+                return null;
+              }
+            })
+          ),
+        ]);
+
+        capabilitiesMap = fetchedCapabilities as Record<string, CapabilitiesEntry>;
+        detailsResponses.forEach((res) => {
+          const d = (res as unknown as { data: Group } | null)?.data;
+          if (d?.id) {
+            detailsMap[d.id] = { type: d.type, alias: d.alias };
+          }
+        });
+      }
+
+      const groupAliasCapabilities = capabilitiesMap[groupAliasPath];
+      const enrichedIds = new Set(itemsToEnrich.map((item) => item.id));
+
+      // Return the full N-item array so Page::ListView can paginate/sort; only P items are enriched
       const groups = items.map((item) => {
+        if (!enrichedIds.has(item.id)) {
+          return {
+            ...item,
+            canDelete: false,
+            canEdit: false,
+            canAddAlias: false,
+          } as GroupListItem;
+        }
+
         const capPath = this.capabilities.pathFor('identityCapabilities', {
           identityType: 'group',
           id: item.id,
@@ -98,31 +189,26 @@ export default class IdentityGroupsIndexRoute extends Route {
           canDelete: itemCapabilities?.canDelete || false,
           canEdit: itemCapabilities?.canUpdate || false,
           canAddAlias: groupAliasCapabilities?.canCreate || false,
-        };
-      }) as GroupListItem[];
-
-      const listViewConfig = { ...accessIdentityGroupsListViewConfig };
-      listViewConfig.breadcrumbs = [
-        { label: 'Vault', route: 'vault.cluster.dashboard', icon: 'vault' },
-        { label: 'Groups' },
-      ];
+        } as GroupListItem;
+      });
 
       return {
         groups,
-        listViewConfig,
+        listViewConfig: buildListViewConfig(),
         canCreateGroup,
-        page: Number(page) || 1,
-        pageSize: Number(pageSize) || 10,
+        page,
+        pageSize,
       };
     } catch (error) {
       const { status } = await this.api.parseError(error);
       if (status === 404) {
-        const listViewConfig = { ...accessIdentityGroupsListViewConfig };
-        listViewConfig.breadcrumbs = [
-          { label: 'Vault', route: 'vault.cluster.dashboard', icon: 'vault' },
-          { label: 'Groups' },
-        ];
-        return { groups: [], listViewConfig, canCreateGroup, page: 1, pageSize: Number(pageSize) || 10 };
+        return {
+          groups: [],
+          listViewConfig: buildListViewConfig(),
+          canCreateGroup,
+          page: 1,
+          pageSize,
+        };
       }
       throw error;
     }
