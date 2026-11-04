@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: BUSL-1.1
  */
 
-import { click, currentRouteName, currentURL, visit } from '@ember/test-helpers';
+import { click, currentRouteName, currentURL, fillIn, settled, visit } from '@ember/test-helpers';
 import { module, test } from 'qunit';
 import { setupApplicationTest } from 'ember-qunit';
 import page from 'vault/tests/pages/access/identity/index';
@@ -439,5 +439,125 @@ module('Acceptance | /access/identity/entities | page navigation enrichment isol
     } else {
       assert.ok(true, 'pagination control not rendered for pre-paginated entities table (expected)');
     }
+  });
+});
+
+// Filtering must still operate on the full dataset; enrichment stays page-scoped (WO-018)
+module('Acceptance | /access/identity/entities | filtering with page-scoped enrichment', function (hooks) {
+  setupApplicationTest(hooks);
+  setupMirage(hooks);
+
+  const ALPHA_COUNT = 10;
+  const BETA_COUNT = 10;
+
+  hooks.beforeEach(async function () {
+    this._originalResizeObserver = window.ResizeObserver;
+    window.ResizeObserver = class ResizeObserver {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+
+    await login();
+
+    this.alpha = [];
+    this.beta = [];
+    const keys = [];
+    const key_info = {};
+
+    for (let i = 1; i <= ALPHA_COUNT; i++) {
+      const id = `alpha-ent-id-${String(i).padStart(2, '0')}`;
+      const name = `alpha-${String(i).padStart(2, '0')}`;
+      this.alpha.push({ id, name });
+      keys.push(id);
+      key_info[id] = { name, aliases: [] };
+    }
+    for (let i = 1; i <= BETA_COUNT; i++) {
+      const id = `beta-ent-id-${String(i).padStart(2, '0')}`;
+      const name = `beta-${String(i).padStart(2, '0')}`;
+      this.beta.push({ id, name });
+      keys.push(id);
+      key_info[id] = { name, aliases: [] };
+    }
+
+    this.server.get('/identity/entity/id', () => ({ data: { keys, key_info }, request_id: 'test' }));
+    this.server.post('/sys/capabilities-self', () => ({ data: {}, request_id: 'test' }));
+  });
+
+  hooks.afterEach(function () {
+    window.ResizeObserver = this._originalResizeObserver;
+    this.fetchSpy?.restore();
+  });
+
+  test('it filters to alpha entities and enriches only the filtered page slice', async function (assert) {
+    const capabilities = this.owner.lookup('service:capabilities');
+    this.fetchSpy = sinon.spy(capabilities, 'fetch');
+
+    // pageFilter query param drives route paginate() before enrichment
+    await visit('/vault/access/identity/entities?pageFilter=alpha');
+    await settled();
+
+    assert.true(currentURL().includes('pageFilter=alpha'), 'URL carries pageFilter');
+
+    for (const { name } of this.alpha) {
+      assert.dom(`[data-test-button="entity ${name}"]`).exists(`${name} visible after filter`);
+    }
+    for (const { name } of this.beta) {
+      assert.dom(`[data-test-button="entity ${name}"]`).doesNotExist(`${name} hidden by filter`);
+    }
+
+    // Exactly 10 filtered items fit on one page (DEFAULT_PAGE_SIZE 15)
+    const nextBtn = document.querySelector(GENERAL.nextPage);
+    if (nextBtn) {
+      assert.true(
+        nextBtn.hasAttribute('disabled') || nextBtn.getAttribute('aria-disabled') === 'true',
+        'next page control disabled when filtered set fits on page 1'
+      );
+    } else {
+      assert.ok(true, 'next page control absent when filtered set fits on page 1');
+    }
+
+    assert.ok(this.fetchSpy.called, 'capabilities.fetch called after filtered visit');
+    const paths = this.fetchSpy.lastCall.args[0] || [];
+    const entityIds = paths
+      .filter((p) => typeof p === 'string')
+      .map((p) => {
+        const m = p.match(/identity\/entity\/id\/([^/]+)/);
+        return m ? m[1] : null;
+      })
+      .filter(Boolean);
+
+    const alphaIds = new Set(this.alpha.map((e) => e.id));
+    const betaIds = new Set(this.beta.map((e) => e.id));
+
+    assert.strictEqual(entityIds.length, ALPHA_COUNT, `enrichment covers exactly ${ALPHA_COUNT} filtered entities`);
+    assert.ok(
+      entityIds.every((id) => alphaIds.has(id)),
+      'capability paths contain only alpha- entity IDs'
+    );
+    assert.notOk(
+      entityIds.some((id) => betaIds.has(id)),
+      'capability paths contain zero beta- entity IDs'
+    );
+
+    // Clearing pageFilter restores unfiltered enrichment (page 1 includes alphas + betas)
+    this.fetchSpy.resetHistory();
+    await visit('/vault/access/identity/entities');
+    await settled();
+    assert.false(currentURL().includes('pageFilter='), 'pageFilter cleared');
+
+    const clearedPaths = this.fetchSpy.lastCall?.args[0] || [];
+    const clearedIds = clearedPaths
+      .filter((p) => typeof p === 'string')
+      .map((p) => {
+        const m = p.match(/identity\/entity\/id\/([^/]+)/);
+        return m ? m[1] : null;
+      })
+      .filter(Boolean);
+    assert.ok(
+      clearedIds.some((id) => betaIds.has(id)),
+      'without pageFilter, enrichment includes beta entity IDs again'
+    );
+    assert.ok(clearedIds.length > ALPHA_COUNT, 'unfiltered page enriches more than the alpha-only slice');
   });
 });

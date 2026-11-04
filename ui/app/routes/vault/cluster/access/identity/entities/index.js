@@ -43,8 +43,9 @@ export default class IdentityIndexRoute extends Route {
       }
     }
 
-    // Paginate before enrichment so capability fetches are scoped to the visible page
-    const paginatedResult = paginate(items, { page, filter: pageFilter });
+    // Paginate before enrichment so capability fetches are scoped to the visible page.
+    // filterKey required so pageFilter matches entity name (items are objects, not strings).
+    const paginatedResult = paginate(items, { page, filter: pageFilter, filterKey: 'name' });
 
     // Build capability paths only for the current page slice (+ shared entity-alias create path)
     const capabilityPaths = [

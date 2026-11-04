@@ -654,3 +654,131 @@ module('Acceptance | /access/identity/groups | capability-gated controls | restr
     assert.dom(GENERAL.menuItem('delete-group')).doesNotExist('Delete hidden for read-only policy');
   });
 });
+
+// Filtering must still operate on the full dataset; enrichment stays page-scoped (WO-018)
+module('Acceptance | /access/identity/groups | filtering with page-scoped enrichment', function (hooks) {
+  setupApplicationTest(hooks);
+  setupMirage(hooks);
+
+  const PAGE_SIZE = 10;
+  const GAMMA_COUNT = 10;
+  const DELTA_COUNT = 10;
+
+  hooks.beforeEach(async function () {
+    await login();
+
+    // alpha-sorting: gamma-* before delta-* would put delta first; use aaa-/zzz- prefixes
+    // so the matching set occupies the first page and enrichment IDs align with the filter.
+    this.gamma = [];
+    this.delta = [];
+    for (let i = 1; i <= GAMMA_COUNT; i++) {
+      this.gamma.push({
+        id: `gamma-grp-id-${String(i).padStart(2, '0')}`,
+        name: `aaa-gamma-${String(i).padStart(2, '0')}`,
+      });
+    }
+    for (let i = 1; i <= DELTA_COUNT; i++) {
+      this.delta.push({
+        id: `delta-grp-id-${String(i).padStart(2, '0')}`,
+        name: `zzz-delta-${String(i).padStart(2, '0')}`,
+      });
+    }
+    this.groups = [...this.gamma, ...this.delta];
+
+    this.server.get('/identity/group/id', () => groupListResponse(this.groups));
+    this.server.get('/identity/group/id/:id', (_, req) => {
+      const group = this.groups.find((g) => g.id === req.params.id) ?? this.groups[0];
+      return {
+        data: { id: group.id, name: group.name, type: 'internal', alias: null, policies: [] },
+        request_id: 'test',
+      };
+    });
+    this.server.post('/sys/capabilities-self', () => ({ data: {}, request_id: 'test' }));
+  });
+
+  hooks.afterEach(function () {
+    this.readSpy?.restore();
+    this.fetchSpy?.restore();
+  });
+
+  test('it filters to gamma groups and enriches only the filtered visible page', async function (assert) {
+    const api = this.owner.lookup('service:api');
+    const capabilities = this.owner.lookup('service:capabilities');
+    this.readSpy = sinon.spy(api.identity, 'groupReadById');
+    this.fetchSpy = sinon.spy(capabilities, 'fetch');
+
+    const gammaIds = new Set(this.gamma.map((g) => g.id));
+    const deltaIds = new Set(this.delta.map((g) => g.id));
+
+    await visit('/vault/access/identity/groups');
+    await settled();
+
+    // Initial page-scoped enrichment (name-sorted first PAGE_SIZE = all aaa-gamma-*)
+    const readIds = this.readSpy.getCalls().map((c) => c.args[0]);
+    assert.strictEqual(
+      readIds.length,
+      PAGE_SIZE,
+      `groupReadById called ${PAGE_SIZE} times on page 1, not all ${this.groups.length}`
+    );
+    assert.ok(
+      readIds.every((id) => gammaIds.has(id)),
+      'groupReadById only for gamma (aaa-gamma) group IDs on page 1'
+    );
+    assert.notOk(
+      readIds.some((id) => deltaIds.has(id)),
+      'groupReadById not called for delta group IDs'
+    );
+
+    assert.ok(this.fetchSpy.called, 'capabilities.fetch called');
+    const paths = this.fetchSpy.lastCall.args[0] || [];
+    const pathIds = paths
+      .filter((p) => typeof p === 'string' && p.includes('identity/group/id/'))
+      .map((p) => {
+        const m = p.match(/identity\/group\/id\/([^/]+)/);
+        return m ? m[1] : null;
+      })
+      .filter(Boolean);
+
+    assert.ok(
+      pathIds.every((id) => gammaIds.has(id)),
+      'capabilities paths contain only gamma group IDs'
+    );
+    assert.notOk(
+      pathIds.some((id) => deltaIds.has(id)),
+      'capabilities paths contain zero delta group IDs'
+    );
+
+    this.readSpy.resetHistory();
+
+    await fillIn(GENERAL.filterInput, 'gamma');
+    await settled();
+
+    assert.dom(GENERAL.tableRow()).exists({ count: GAMMA_COUNT }, 'filter shows exactly gamma matches');
+    for (const { name } of this.gamma) {
+      assert.dom(`[data-test-identity-link="${name}"]`).exists(`${name} visible`);
+    }
+    for (const { name } of this.delta) {
+      assert.dom(`[data-test-identity-link="${name}"]`).doesNotExist(`${name} hidden`);
+    }
+
+    assert.dom(GENERAL.paginationInfo).exists('pagination info present for filtered set');
+    const nextBtn = document.querySelector(GENERAL.nextPage);
+    if (nextBtn) {
+      assert.true(
+        nextBtn.hasAttribute('disabled') || nextBtn.getAttribute('aria-disabled') === 'true',
+        'next page control disabled when filtered count equals page size'
+      );
+    } else {
+      assert.ok(true, 'next page control absent when filtered count equals page size');
+    }
+
+    // Client-side filter does not re-hit the API; enrichment stays the page-1 gamma slice
+    assert.strictEqual(this.readSpy.callCount, 0, 'filter does not re-fetch group details');
+
+    // Clearing the filter restores the unfiltered first page
+    await fillIn(GENERAL.filterInput, '');
+    await settled();
+    assert.dom(GENERAL.tableRow()).exists({ count: PAGE_SIZE }, 'cleared filter shows page-size rows');
+    assert.dom(`[data-test-identity-link="${this.gamma[0].name}"]`).exists('gamma still visible after clear');
+  });
+});
