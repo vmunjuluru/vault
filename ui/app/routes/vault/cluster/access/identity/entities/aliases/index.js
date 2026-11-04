@@ -26,13 +26,24 @@ export default class IdentityAliasesIndexRoute extends Route {
     try {
       const response = await this.api.identity.entityListAliasesById(IdentityApiAliasListByIdListEnum.TRUE);
       const aliases = await this.api.keyInfoToArray(response);
+
+      // Paginate before enrichment so capability fetches are scoped to the visible page
+      const paginatedResult = paginate(aliases, { page: params.page, filter: params.pageFilter });
       const aliasesWithCapabilities = await attachAliasCapabilities({
-        aliases,
+        aliases: paginatedResult,
         identityType: 'entity',
         capabilities: this.capabilities,
       });
 
-      return paginate(aliasesWithCapabilities, { page: params.page, filter: params.pageFilter });
+      // attachAliasCapabilities may return a new array; preserve pagination meta
+      if (aliasesWithCapabilities !== paginatedResult) {
+        Object.defineProperty(aliasesWithCapabilities, 'meta', {
+          value: paginatedResult.meta,
+          writable: false,
+        });
+      }
+
+      return aliasesWithCapabilities;
     } catch (err) {
       const { status } = await this.api.parseError(err);
       if (status === 404) {
