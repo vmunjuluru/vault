@@ -25,6 +25,7 @@ export default class IdentityIndexRoute extends Route {
   async model(params) {
     const { pageFilter, page } = params;
 
+    // Page-independent capability checks (not per-item)
     const [{ canUpdate: canCreateEntity }, { canUpdate: canMergeEntities }] = await Promise.all([
       this.capabilities.for('identityEntity'),
       this.capabilities.for('entityMerge'),
@@ -42,25 +43,26 @@ export default class IdentityIndexRoute extends Route {
       }
     }
 
-    // Build capability paths: per-entity and per-alias (for delete gating), plus the
-    // entity-alias create path used to gate the "Create alias" row action
+    // Paginate before enrichment so capability fetches are scoped to the visible page
+    const paginatedResult = paginate(items, { page, filter: pageFilter });
+
+    // Build capability paths only for the current page slice (+ shared entity-alias create path)
     const capabilityPaths = [
       this.capabilities.pathFor('entityAlias'),
-      ...items.map((item) =>
+      ...paginatedResult.map((item) =>
         this.capabilities.pathFor('identityCapabilities', { identityType: 'entity', id: item.id })
       ),
-      ...items.flatMap(
+      ...paginatedResult.flatMap(
         (item) =>
           item.aliases?.map((alias) => this.capabilities.pathFor('entityAliasById', { id: alias.id })) || []
       ),
     ];
 
-    // Fetch capabilities for all paths
     const capabilitiesMap = await this.capabilities.fetch(capabilityPaths);
 
     const entityAliasCapabilities = capabilitiesMap[this.capabilities.pathFor('entityAlias')];
 
-    const itemsWithCapabilities = items.map((item) => {
+    const entities = paginatedResult.map((item) => {
       const capPath = this.capabilities.pathFor('identityCapabilities', {
         identityType: 'entity',
         id: item.id,
@@ -84,8 +86,14 @@ export default class IdentityIndexRoute extends Route {
       };
     });
 
+    // Preserve pagination meta from paginate() on the enriched page slice
+    Object.defineProperty(entities, 'meta', {
+      value: paginatedResult.meta,
+      writable: false,
+    });
+
     return {
-      entities: paginate(itemsWithCapabilities, { page, filter: pageFilter }),
+      entities,
       canCreateEntity,
       canMergeEntities,
     };
