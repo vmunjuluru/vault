@@ -373,10 +373,23 @@ module('Acceptance | /access/identity/entities | page navigation enrichment isol
   }
 
   test('it enriches only page-2 entity IDs after navigation', async function (assert) {
-    await visit('/vault/access/identity/entities');
-
     const capabilities = this.owner.lookup('service:capabilities');
     this.fetchSpy = sinon.spy(capabilities, 'fetch');
+
+    await visit('/vault/access/identity/entities');
+    assert.ok(this.fetchSpy.called, 'capabilities.fetch was called for page 1');
+    const page1Paths = this.fetchSpy.lastCall.args[0] || [];
+    const page1Ids = new Set(
+      page1Paths
+        .filter((p) => typeof p === 'string')
+        .map((p) => {
+          const match = p.match(/identity\/entity\/id\/([^/]+)/);
+          return match ? match[1] : null;
+        })
+        .filter(Boolean)
+    );
+
+    this.fetchSpy.resetHistory();
 
     // Entities ListTable receives a pre-paginated page slice and may not render
     // HDS next-page controls; navigate via the page query param (refreshModel: true).
@@ -384,20 +397,17 @@ module('Acceptance | /access/identity/entities | page navigation enrichment isol
 
     assert.ok(this.fetchSpy.called, 'capabilities.fetch was called for page 2');
     const paths = this.fetchSpy.lastCall.args[0] || [];
-    const entityPaths = paths.filter((p) => typeof p === 'string' && p.includes('identity/entity/id/'));
-
-    // Page-2 slice under DEFAULT_PAGE_SIZE=15 is indices 15..29 of the list order.
-    // Entity list order from the API is not guaranteed to match seed order, so
-    // compute expected IDs from the paths that appear and assert zero page-1 leakage
-    // by comparing against the first PAGE_SIZE IDs returned on an earlier list call.
-    // Simpler approach: collect all IDs referenced in the fetch and ensure count <= PAGE_SIZE
-    // and that the set does not include every seeded ID (would indicate full-N enrichment).
-    const pathIds = entityPaths
-      .map((p) => {
-        const match = p.match(/identity\/entity\/id\/([^/]+)/);
-        return match ? match[1] : null;
-      })
-      .filter(Boolean);
+    const pathIds = [
+      ...new Set(
+        paths
+          .filter((p) => typeof p === 'string')
+          .map((p) => {
+            const match = p.match(/identity\/entity\/id\/([^/]+)/);
+            return match ? match[1] : null;
+          })
+          .filter(Boolean)
+      ),
+    ];
 
     assert.ok(pathIds.length > 0, 'page 2 enrichment includes entity capability paths');
     assert.ok(
@@ -405,20 +415,17 @@ module('Acceptance | /access/identity/entities | page navigation enrichment isol
       `page 2 enrich path count ${pathIds.length} is <= page size ${PAGE_SIZE}`
     );
     assert.ok(
-      pathIds.length < ENTITY_COUNT,
-      'page 2 enrichment is not the full N-entity set'
+      pathIds.length < this.entityIds.length,
+      'page 2 enrichment is not the full seeded N-entity set'
     );
 
-    // Unique path IDs must be a proper subset of seeded entities
-    const uniquePathIds = [...new Set(pathIds)];
+    // Isolation: no entity ID from the page-1 fetch should appear in the page-2 fetch.
+    const leaked = pathIds.filter((id) => page1Ids.has(id));
     assert.strictEqual(
-      uniquePathIds.length,
-      pathIds.length,
-      'no duplicate entity capability paths in the page-2 fetch'
+      leaked.length,
+      0,
+      `page 2 fetch must not include page 1 entity IDs (leaked: ${leaked.join(', ')})`
     );
-    uniquePathIds.forEach((id) => {
-      assert.ok(this.entityIds.includes(id), `enriched id ${id} is one of the seeded entities`);
-    });
 
     // URL reflects page 2
     assert.true(currentURL().includes('page=2'), 'URL contains page=2 after navigation');
