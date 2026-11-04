@@ -89,6 +89,30 @@ function buildListViewConfig() {
   return listViewConfig;
 }
 
+async function fetchGroupDetails(
+  api: ApiService,
+  items: GroupKeyInfo[]
+): Promise<Record<string, Partial<Pick<Group, 'type' | 'alias'>>>> {
+  const detailsMap: Record<string, Partial<Pick<Group, 'type' | 'alias'>>> = {};
+  const detailsResponses = await Promise.all(
+    items.map(async (item) => {
+      try {
+        return await api.identity.groupReadById(item.id);
+      } catch {
+        // Graceful: render item without detail data rather than failing the page
+        return null;
+      }
+    })
+  );
+  detailsResponses.forEach((res) => {
+    const d = (res as unknown as { data: Group } | null)?.data;
+    if (d?.id) {
+      detailsMap[d.id] = { type: d.type, alias: d.alias };
+    }
+  });
+  return detailsMap;
+}
+
 export default class IdentityGroupsIndexRoute extends Route {
   @service declare readonly api: ApiService;
   @service declare readonly capabilities: CapabilitiesService;
@@ -112,69 +136,79 @@ export default class IdentityGroupsIndexRoute extends Route {
       const response = await this.api.identity.groupListById(IdentityApiGroupListByIdListEnum.TRUE);
       const items = this.api.keyInfoToArray<GroupKeyInfo>(response);
 
-      // name/id (and default unsorted) can page-scope enrichment; type/alias need full details (WO-014)
-      const usePageScopedEnrichment = !sortBy || sortBy === 'name' || sortBy === 'id';
+      // name/id (and default unsorted) can page-scope both details + capabilities.
+      // type/alias need full-detail groupReadById for correct global sort; capabilities stay page-scoped.
+      const usePageScopedDetails = !sortBy || sortBy === 'name' || sortBy === 'id';
 
-      let itemsToEnrich: GroupKeyInfo[];
-      if (usePageScopedEnrichment) {
+      let detailsMap: Record<string, Partial<Pick<Group, 'type' | 'alias'>>> = {};
+      let capabilityTargetIds: string[];
+
+      if (usePageScopedDetails) {
         const sorted = sortItems(
           items as unknown as Record<string, unknown>[],
           sortBy,
           sortOrder
         ) as unknown as GroupKeyInfo[];
         const start = (page - 1) * pageSize;
-        itemsToEnrich = sorted.slice(start, start + pageSize);
+        const pageSlice = sorted.slice(start, start + pageSize);
+        capabilityTargetIds = pageSlice.map((item) => item.id);
+        detailsMap = await fetchGroupDetails(this.api, pageSlice);
       } else {
-        itemsToEnrich = items;
+        // Full-detail fallback (WO-014): enrich ALL N items with type/alias for correct global sort.
+        detailsMap = await fetchGroupDetails(this.api, items);
+
+        const itemsWithDetails = items.map((item) => ({
+          ...item,
+          ...(detailsMap[item.id] || {}),
+        }));
+        const sorted = sortItems(
+          itemsWithDetails as unknown as Record<string, unknown>[],
+          sortBy,
+          sortOrder
+        ) as unknown as GroupKeyInfo[];
+        const start = (page - 1) * pageSize;
+        const pageSlice = sorted.slice(start, start + pageSize);
+        capabilityTargetIds = pageSlice.map((item) => item.id);
       }
 
       const groupAliasPath = this.capabilities.pathFor('groupAlias');
       let capabilitiesMap: Record<string, CapabilitiesEntry> = {};
-      const detailsMap: Record<string, Partial<Pick<Group, 'type' | 'alias'>>> = {};
 
-      if (itemsToEnrich.length > 0) {
+      if (capabilityTargetIds.length > 0) {
         const capabilityPaths = [
           groupAliasPath,
-          ...itemsToEnrich.map((item) =>
-            this.capabilities.pathFor('identityCapabilities', { identityType: 'group', id: item.id })
+          ...capabilityTargetIds.map((id) =>
+            this.capabilities.pathFor('identityCapabilities', { identityType: 'group', id })
           ),
         ];
-
-        const [fetchedCapabilities, detailsResponses] = await Promise.all([
-          this.capabilities.fetch(capabilityPaths),
-          Promise.all(
-            itemsToEnrich.map(async (item) => {
-              try {
-                return await this.api.identity.groupReadById(item.id);
-              } catch {
-                // Graceful: render item without detail data rather than failing the page
-                return null;
-              }
-            })
-          ),
-        ]);
-
-        capabilitiesMap = fetchedCapabilities as Record<string, CapabilitiesEntry>;
-        detailsResponses.forEach((res) => {
-          const d = (res as unknown as { data: Group } | null)?.data;
-          if (d?.id) {
-            detailsMap[d.id] = { type: d.type, alias: d.alias };
-          }
-        });
+        capabilitiesMap = (await this.capabilities.fetch(capabilityPaths)) as Record<
+          string,
+          CapabilitiesEntry
+        >;
       }
 
       const groupAliasCapabilities = capabilitiesMap[groupAliasPath];
-      const enrichedIds = new Set(itemsToEnrich.map((item) => item.id));
+      const capabilityIdSet = new Set(capabilityTargetIds);
+      // In the full-detail path every item has type/alias; in page-scoped only the page slice does.
+      const detailIdSet = new Set(Object.keys(detailsMap));
 
-      // Return the full N-item array so Page::ListView can paginate/sort; only P items are enriched
+      // Return the full N-item array so Page::ListView can paginate/sort; only P items get capabilities.
       const groups = items.map((item) => {
-        if (!enrichedIds.has(item.id)) {
+        const hasDetails = detailIdSet.has(item.id);
+        const hasCapabilities = capabilityIdSet.has(item.id);
+
+        const base: GroupListItem = {
+          ...item,
+          ...(hasDetails ? detailsMap[item.id] || {} : {}),
+        };
+
+        if (!hasCapabilities) {
           return {
-            ...item,
+            ...base,
             canDelete: false,
             canEdit: false,
             canAddAlias: false,
-          } as GroupListItem;
+          };
         }
 
         const capPath = this.capabilities.pathFor('identityCapabilities', {
@@ -184,12 +218,11 @@ export default class IdentityGroupsIndexRoute extends Route {
         const itemCapabilities = capabilitiesMap[capPath];
 
         return {
-          ...item,
-          ...(detailsMap[item.id] || {}),
+          ...base,
           canDelete: itemCapabilities?.canDelete || false,
           canEdit: itemCapabilities?.canUpdate || false,
           canAddAlias: groupAliasCapabilities?.canCreate || false,
-        } as GroupListItem;
+        };
       });
 
       return {
