@@ -50,8 +50,9 @@ export default class IdentityGroupsIndexRoute extends Route {
 
   queryParams = {
     page: { refreshModel: true },
-    sortBy: { refreshModel: false },
-    sortOrder: { refreshModel: false },
+    // refreshModel true so enrichment can branch on sortBy (name/id vs type/alias)
+    sortBy: { refreshModel: true },
+    sortOrder: { refreshModel: true },
   };
 
   async model(params: RouteParams) {
