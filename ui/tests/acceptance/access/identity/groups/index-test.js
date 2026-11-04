@@ -528,3 +528,129 @@ module('Acceptance | /access/identity/groups | page navigation enrichment isolat
     );
   });
 });
+
+// Capability-gated controls with page-scoped enrichment (WO-017)
+module('Acceptance | /access/identity/groups | capability-gated controls for unenriched items', function (
+  hooks
+) {
+  setupApplicationTest(hooks);
+  setupMirage(hooks);
+
+  const PAGE_SIZE = 10;
+  const GROUP_COUNT = 15;
+
+  hooks.beforeEach(async function () {
+    await login();
+    this.groups = Array.from({ length: GROUP_COUNT }, (_, i) => ({
+      id: `cap-group-id-${String(i).padStart(2, '0')}`,
+      name: `cap-group-${String(i).padStart(2, '0')}`,
+    }));
+    this.server.get('/identity/group/id', () => groupListResponse(this.groups));
+    this.server.get('/identity/group/id/:id', (_, req) => {
+      const group = this.groups.find((g) => g.id === req.params.id) ?? this.groups[0];
+      return {
+        data: { id: group.id, name: group.name, type: 'internal', alias: null, policies: [] },
+        request_id: 'test',
+      };
+    });
+    // Missing path keys → capabilities service defaults to true (root-like)
+    this.server.post('/sys/capabilities-self', () => ({ data: {}, request_id: 'test' }));
+  });
+
+  test('it shows correct actions for enriched page-1 items with root token', async function (assert) {
+    await visit('/vault/access/identity/groups');
+
+    const page1 = this.groups.slice(0, PAGE_SIZE);
+    assert.strictEqual(page1.length, PAGE_SIZE, `page 1 renders ${PAGE_SIZE} groups`);
+
+    for (const group of page1) {
+      await click(`[data-test-popup-menu-trigger="${group.name}"]`);
+      assert.dom(GENERAL.menuItem('view-details')).exists(`${group.name}: View details available`);
+      assert.dom(GENERAL.menuItem('edit-details')).exists(`${group.name}: Edit details for enriched item`);
+      assert.dom(GENERAL.menuItem('delete-group')).exists(`${group.name}: Delete group for enriched item`);
+      // Close dropdown before opening the next row's menu
+      await click(`[data-test-popup-menu-trigger="${group.name}"]`);
+    }
+  });
+
+  test('it shows correct actions for page-2 items after navigation', async function (assert) {
+    await visit('/vault/access/identity/groups');
+    await click(GENERAL.nextPage);
+    assert.true(currentURL().includes('page=2'), 'navigated to page 2');
+
+    const page2 = this.groups.slice(PAGE_SIZE);
+    assert.strictEqual(page2.length, GROUP_COUNT - PAGE_SIZE, 'page 2 has remaining groups');
+
+    for (const group of page2) {
+      await click(`[data-test-popup-menu-trigger="${group.name}"]`);
+      assert.dom(GENERAL.menuItem('edit-details')).exists(`${group.name}: Edit details on page 2`);
+      assert.dom(GENERAL.menuItem('delete-group')).exists(`${group.name}: Delete group on page 2`);
+      await click(`[data-test-popup-menu-trigger="${group.name}"]`);
+    }
+  });
+
+  test('it hides edit and delete actions with restricted token', async function (assert) {
+    // Explicit read/list only — missing keys would fail-open to true in capabilities service.
+    // Mirrors tokenWithPolicyCmd('identity-read-only', 'path "identity/group/*" { capabilities = ["read", "list"] }').
+    this.server.post('/sys/capabilities-self', (_, request) => {
+      const { paths = [] } = JSON.parse(request.requestBody || '{}');
+      const data = {};
+      paths.forEach((p) => {
+        if (p.includes('identity/group')) {
+          data[p] = ['read', 'list'];
+        } else {
+          data[p] = ['root'];
+        }
+      });
+      return { data, request_id: 'test' };
+    });
+
+    await visit('/vault/access/identity/groups');
+    await click(`[data-test-popup-menu-trigger="${this.groups[0].name}"]`);
+    assert.dom(GENERAL.menuItem('view-details')).exists('View details remains available');
+    assert.dom(GENERAL.menuItem('edit-details')).doesNotExist('Edit hidden without update capability');
+    assert.dom(GENERAL.menuItem('delete-group')).doesNotExist('Delete hidden without delete capability');
+  });
+});
+
+// Restricted-token capability gating against a live Vault (WO-017 AC: tokenWithPolicyCmd)
+module('Acceptance | /access/identity/groups | capability-gated controls | restricted policy token', function (
+  hooks
+) {
+  setupApplicationTest(hooks);
+
+  hooks.beforeEach(async function () {
+    await login();
+    this.groupName = `cap-ro-group-${Date.now()}`;
+    this.groupId = await runCmd(
+      `write -field=id identity/group name=${this.groupName} type=internal`
+    );
+    const token = await runCmd(
+      tokenWithPolicyCmd(
+        'identity-group-read-only',
+        'path "identity/group/*" { capabilities = ["read", "list"] }\npath "identity/group/id" { capabilities = ["list"] }\npath "identity/group/id/*" { capabilities = ["read", "list"] }'
+      )
+    );
+    await login(token);
+  });
+
+  hooks.afterEach(async function () {
+    await login();
+    if (this.groupName) {
+      await runCmd(`delete identity/group/name/${this.groupName}`);
+    }
+  });
+
+  test('it hides edit and delete for groups when token lacks update/delete', async function (assert) {
+    await visit('/vault/access/identity/groups');
+    assert.dom(`[data-test-identity-link="${this.groupName}"]`).exists('restricted token can list group');
+
+    const trigger = `[data-test-popup-menu-trigger="${this.groupName}"]`;
+    // View details is always rendered, so the menu trigger should exist; edit/delete stay hidden.
+    assert.dom(trigger).exists('menu trigger present because View details is always available');
+    await click(trigger);
+    assert.dom(GENERAL.menuItem('view-details')).exists('View details remains available');
+    assert.dom(GENERAL.menuItem('edit-details')).doesNotExist('Edit hidden for read-only policy');
+    assert.dom(GENERAL.menuItem('delete-group')).doesNotExist('Delete hidden for read-only policy');
+  });
+});
