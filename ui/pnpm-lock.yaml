@@ -9,6 +9,7 @@ overrides:
   ansi-html: 0.0.8
   braces: 3.0.3
   clean-css: 5.3.3
+  handlebars: 4.7.10
   kind-of: 6.0.3
   markdown-it: 14.1.1
   micromatch: 4.0.8
@@ -45,8 +46,8 @@ importers:
         specifier: 2.10.0
         version: 2.10.0(@glint/template@1.7.7)(webpack@5.107.2)
       handlebars:
-        specifier: 4.7.9
-        version: 4.7.9
+        specifier: 4.7.10
+        version: 4.7.10
       js-yaml:
         specifier: 5.4.1
         version: 5.4.1
@@ -206,7 +207,7 @@ importers:
         version: 8.9.0(@babel/core@7.26.10)(@ember/test-helpers@5.2.2(@babel/core@7.26.10)(@glint/template@1.7.7))(@glimmer/component@1.1.2(@babel/core@7.26.10))(@glint/template@1.7.7)(ember-source@5.8.0(@babel/core@7.26.10)(@glimmer/component@1.1.2(@babel/core@7.26.10))(@glint/template@1.7.7)(rsvp@4.8.5)(webpack@5.107.2))
       ember-cli:
         specifier: ~5.8.1
-        version: 5.8.1(@babel/core@7.26.10)(@types/node@25.9.1)(handlebars@4.7.9)(underscore@1.13.8)
+        version: 5.8.1(@babel/core@7.26.10)(@types/node@25.9.1)(handlebars@4.7.10)(underscore@1.13.8)
       ember-cli-babel:
         specifier: ~8.2.0
         version: 8.2.0(@babel/core@7.26.10)
@@ -218,7 +219,7 @@ importers:
         version: 2.0.3
       ember-cli-dependency-checker:
         specifier: ~3.3.3
-        version: 3.3.3(ember-cli@5.8.1(@babel/core@7.26.10)(@types/node@25.9.1)(handlebars@4.7.9)(underscore@1.13.8))
+        version: 3.3.3(ember-cli@5.8.1(@babel/core@7.26.10)(@types/node@25.9.1)(handlebars@4.7.10)(underscore@1.13.8))
       ember-cli-deprecation-workflow:
         specifier: ~3.3.0
         version: 3.3.0(ember-source@5.8.0(@babel/core@7.26.10)(@glimmer/component@1.1.2(@babel/core@7.26.10))(@glint/template@1.7.7)(rsvp@4.8.5)(webpack@5.107.2))
@@ -3232,7 +3233,7 @@ packages:
       haml-coffee: ^1.14.1
       hamlet: ^0.3.3
       hamljs: ^0.6.2
-      handlebars: ^4.7.6
+      handlebars: 4.7.10
       hogan.js: ^3.0.2
       htmling: ^0.0.8
       jazz: ^0.0.18
@@ -4988,8 +4989,8 @@ packages:
   growly@1.3.0:
     resolution: {integrity: sha512-+xGQY0YyAWCnqy7Cd++hc2JqMYzlm0dG30Jd0beaA64sROr8C4nt8Yc9V5Ro3avlSUDTN0ulqP/VBKi1/lLygw==}
 
-  handlebars@4.7.9:
-    resolution: {integrity: sha512-4E71E0rpOaQuJR2A3xDZ+GM1HyWYv1clR58tC8emQNeQe3RH7MAzSbat+V0wG78LQBo6m6bzSG/L4pBuCsgnUQ==}
+  handlebars@4.7.10:
+    resolution: {integrity: sha512-P5VJMVM7qgBn6vjXMw8WG9uVI+ncf2pi72j4de4yz5ZULLj2RGqLYaKOYGsgyrViQ0tePOVlN1tDCCXXtFqXKg==}
     engines: {node: '>=0.4.7'}
     hasBin: true
 
@@ -12030,7 +12031,7 @@ snapshots:
   broccoli-middleware@2.1.2:
     dependencies:
       ansi-html: 0.0.8
-      handlebars: 4.7.9
+      handlebars: 4.7.10
       has-ansi: 3.0.0
       mime-types: 2.1.35
 
@@ -12259,7 +12260,7 @@ snapshots:
       connect: 3.7.0
       esm: 3.2.25
       findup-sync: 2.0.0
-      handlebars: 4.7.9
+      handlebars: 4.7.10
       heimdalljs: 0.2.6
       heimdalljs-logger: 0.1.10
       mime-types: 2.1.35
@@ -12288,7 +12289,7 @@ snapshots:
       console-ui: 3.1.2
       esm: 3.2.25
       findup-sync: 4.0.0
-      handlebars: 4.7.9
+      handlebars: 4.7.10
       heimdalljs: 0.2.6
       heimdalljs-logger: 0.1.10
       https: 1.0.0
@@ -12635,10 +12636,10 @@ snapshots:
       ora: 3.4.0
       through2: 3.0.2
 
-  consolidate@1.0.4(@babel/core@7.26.10)(handlebars@4.7.9)(lodash@4.18.1)(mustache@4.2.0)(underscore@1.13.8):
+  consolidate@1.0.4(@babel/core@7.26.10)(handlebars@4.7.10)(lodash@4.18.1)(mustache@4.2.0)(underscore@1.13.8):
     optionalDependencies:
       '@babel/core': 7.26.10
-      handlebars: 4.7.9
+      handlebars: 4.7.10
       lodash: 4.18.1
       mustache: 4.2.0
       underscore: 1.13.8
@@ -13142,7 +13143,7 @@ snapshots:
       debug: 4.4.3
       fs-extra: 10.1.0
       fs-tree-diff: 2.0.1
-      handlebars: 4.7.9
+      handlebars: 4.7.10
       is-subdir: 1.2.0
       js-string-escape: 1.0.1
       lodash: 4.18.0
@@ -13186,7 +13187,7 @@ snapshots:
       debug: 4.4.3
       fs-extra: 10.1.0
       fs-tree-diff: 2.0.1
-      handlebars: 4.7.9
+      handlebars: 4.7.10
       is-subdir: 1.2.0
       js-string-escape: 1.0.1
       lodash: 4.18.0
@@ -13411,10 +13412,10 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  ember-cli-dependency-checker@3.3.3(ember-cli@5.8.1(@babel/core@7.26.10)(@types/node@25.9.1)(handlebars@4.7.9)(underscore@1.13.8)):
+  ember-cli-dependency-checker@3.3.3(ember-cli@5.8.1(@babel/core@7.26.10)(@types/node@25.9.1)(handlebars@4.7.10)(underscore@1.13.8)):
     dependencies:
       chalk: 2.4.2
-      ember-cli: 5.8.1(@babel/core@7.26.10)(@types/node@25.9.1)(handlebars@4.7.9)(underscore@1.13.8)
+      ember-cli: 5.8.1(@babel/core@7.26.10)(@types/node@25.9.1)(handlebars@4.7.10)(underscore@1.13.8)
       find-yarn-workspace-root: 2.0.0
       is-git-url: 1.0.0
       resolve: 1.22.12
@@ -13673,7 +13674,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  ember-cli@5.8.1(@babel/core@7.26.10)(@types/node@25.9.1)(handlebars@4.7.9)(underscore@1.13.8):
+  ember-cli@5.8.1(@babel/core@7.26.10)(@types/node@25.9.1)(handlebars@4.7.10)(underscore@1.13.8):
     dependencies:
       '@pnpm/find-workspace-dir': 6.0.3
       broccoli: 3.5.2
@@ -13752,7 +13753,7 @@ snapshots:
       sort-package-json: 1.57.0
       symlink-or-copy: 1.3.1
       temp: 0.9.4
-      testem: 3.20.0(@babel/core@7.26.10)(handlebars@4.7.9)(underscore@1.13.8)
+      testem: 3.20.0(@babel/core@7.26.10)(handlebars@4.7.10)(underscore@1.13.8)
       tiny-lr: 2.0.0
       tree-sync: 2.1.0
       walk-sync: 3.0.0
@@ -15390,7 +15391,7 @@ snapshots:
 
   growly@1.3.0: {}
 
-  handlebars@4.7.9:
+  handlebars@4.7.10:
     dependencies:
       minimist: 1.2.8
       neo-async: 2.6.2
@@ -16378,7 +16379,7 @@ snapshots:
     dependencies:
       growly: 1.3.0
       is-wsl: 2.2.0
-      semver: 7.8.1
+      semver: 7.8.5
       shellwords: 0.1.1
       uuid: 8.3.2
       which: 2.0.2
@@ -17804,7 +17805,7 @@ snapshots:
       commander: 2.20.3
       source-map-support: 0.5.21
 
-  testem@3.20.0(@babel/core@7.26.10)(handlebars@4.7.9)(underscore@1.13.8):
+  testem@3.20.0(@babel/core@7.26.10)(handlebars@4.7.10)(underscore@1.13.8):
     dependencies:
       '@xmldom/xmldom': 0.9.10
       backbone: 1.6.1
@@ -17812,7 +17813,7 @@ snapshots:
       chokidar: 5.0.0
       commander: 14.0.3
       compression: 1.8.1
-      consolidate: 1.0.4(@babel/core@7.26.10)(handlebars@4.7.9)(lodash@4.18.1)(mustache@4.2.0)(underscore@1.13.8)
+      consolidate: 1.0.4(@babel/core@7.26.10)(handlebars@4.7.10)(lodash@4.18.1)(mustache@4.2.0)(underscore@1.13.8)
       execa: 9.6.1
       express: 5.2.1
       glob: 13.0.6
