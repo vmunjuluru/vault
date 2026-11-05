@@ -782,3 +782,150 @@ module('Acceptance | /access/identity/groups | filtering with page-scoped enrich
     assert.dom(`[data-test-identity-link="${this.gamma[0].name}"]`).exists('gamma still visible after clear');
   });
 });
+
+// Full-detail fallback when sorting by type (WO-022)
+module('Acceptance | /access/identity/groups | sort-by-type full-detail fallback', function (hooks) {
+  setupApplicationTest(hooks);
+  setupMirage(hooks);
+
+  const PAGE_SIZE = 10;
+  const EXTERNAL_COUNT = 15;
+  const INTERNAL_COUNT = 14;
+
+  hooks.beforeEach(async function () {
+    await login();
+
+    this.external = Array.from({ length: EXTERNAL_COUNT }, (_, i) => ({
+      id: `ext-grp-id-${String(i).padStart(2, '0')}`,
+      name: `ext-group-${String(i).padStart(2, '0')}`,
+      type: 'external',
+    }));
+    this.internal = Array.from({ length: INTERNAL_COUNT }, (_, i) => ({
+      id: `int-grp-id-${String(i).padStart(2, '0')}`,
+      name: `int-group-${String(i).padStart(2, '0')}`,
+      type: 'internal',
+    }));
+    // null type sorts last (ListView null-last behavior)
+    this.nullType = {
+      id: 'null-grp-id-00',
+      name: 'zzz-null-type-group',
+      type: null,
+    };
+    this.groups = [...this.external, ...this.internal, this.nullType];
+    this.byId = Object.fromEntries(this.groups.map((g) => [g.id, g]));
+
+    this.server.get('/identity/group/id', () => groupListResponse(this.groups));
+    this.server.get('/identity/group/id/:id', (_, req) => {
+      const group = this.byId[req.params.id] ?? this.groups[0];
+      return {
+        data: {
+          id: group.id,
+          name: group.name,
+          type: group.type,
+          alias: null,
+          policies: [],
+        },
+        request_id: 'test',
+      };
+    });
+    this.server.post('/sys/capabilities-self', () => ({ data: {}, request_id: 'test' }));
+  });
+
+  hooks.afterEach(function () {
+    this.readSpy?.restore();
+    this.fetchSpy?.restore();
+  });
+
+  function groupIdsFromCapPaths(paths) {
+    return [
+      ...new Set(
+        (paths || [])
+          .filter((p) => typeof p === 'string' && p.includes('identity/group/id/'))
+          .map((p) => {
+            const m = p.match(/identity\/group\/id\/([^/]+)/);
+            return m ? m[1] : null;
+          })
+          .filter(Boolean)
+      ),
+    ];
+  }
+
+  function visibleGroupNames() {
+    return [...document.querySelectorAll('[data-test-identity-link]')].map((el) =>
+      el.getAttribute('data-test-identity-link')
+    );
+  }
+
+  test('it fetches all N details and scopes capabilities to P when sorting by type', async function (assert) {
+    const api = this.owner.lookup('service:api');
+    const capabilities = this.owner.lookup('service:capabilities');
+    this.readSpy = sinon.spy(api.identity, 'groupReadById');
+    this.fetchSpy = sinon.spy(capabilities, 'fetch');
+
+    await visit('/vault/access/identity/groups');
+    await settled();
+
+    // Initial default load is page-scoped (not under test here)
+    this.readSpy.resetHistory();
+    this.fetchSpy.resetHistory();
+
+    // No type column in ListView config — drive sort via query params (refreshModel: true)
+    await visit('/vault/access/identity/groups?sortBy=type&sortOrder=asc');
+    await settled();
+
+    assert.true(currentURL().includes('sortBy=type'), 'URL carries sortBy=type');
+    assert.strictEqual(
+      this.readSpy.callCount,
+      this.groups.length,
+      `groupReadById called N=${this.groups.length} times for full-detail type sort`
+    );
+
+    assert.ok(this.fetchSpy.called, 'capabilities.fetch called after type sort');
+    const capIds = groupIdsFromCapPaths(this.fetchSpy.lastCall.args[0]);
+    assert.strictEqual(capIds.length, PAGE_SIZE, `capabilities scoped to P=${PAGE_SIZE}, not N`);
+
+    // Ascending type: external < internal < null → page 1 is all external
+    const page1Names = visibleGroupNames();
+    assert.strictEqual(page1Names.length, PAGE_SIZE, 'page 1 renders P rows');
+    assert.ok(
+      page1Names.every((n) => n.startsWith('ext-group-')),
+      'page 1 rows are all external after ascending type sort'
+    );
+    assert.dom(`[data-test-identity-link="${this.nullType.name}"]`).doesNotExist('null-type not on page 1');
+
+    // Page 2 continues global sort: remaining external then internal
+    this.readSpy.resetHistory();
+    this.fetchSpy.resetHistory();
+    await click(GENERAL.nextPage);
+    await settled();
+
+    assert.true(currentURL().includes('page=2'), 'navigated to page 2');
+    assert.strictEqual(
+      this.readSpy.callCount,
+      this.groups.length,
+      'page 2 type-sort still fetches all N details'
+    );
+    const page2CapIds = groupIdsFromCapPaths(this.fetchSpy.lastCall.args[0]);
+    assert.strictEqual(page2CapIds.length, PAGE_SIZE, 'page 2 capabilities still scoped to P');
+
+    const page2Names = visibleGroupNames();
+    const expectedPage2 = [
+      ...this.external.slice(PAGE_SIZE).map((g) => g.name), // 5 remaining external
+      ...this.internal.slice(0, 5).map((g) => g.name), // 5 internal
+    ];
+    assert.deepEqual(page2Names, expectedPage2, 'page 2 continues global type sort order');
+
+    // Descending type reverses order — internal first (null still last among typed? null last always)
+    this.readSpy.resetHistory();
+    await visit('/vault/access/identity/groups?sortBy=type&sortOrder=desc');
+    await settled();
+
+    assert.strictEqual(this.readSpy.callCount, this.groups.length, 'desc type sort still fetches all N');
+    const descNames = visibleGroupNames();
+    assert.ok(
+      descNames.every((n) => n.startsWith('int-group-')),
+      'page 1 after descending type sort shows internal groups first'
+    );
+    assert.dom(`[data-test-identity-link="${this.nullType.name}"]`).doesNotExist('null-type still not on page 1 when desc');
+  });
+});
