@@ -3,13 +3,14 @@
  * SPDX-License-Identifier: BUSL-1.1
  */
 
-import { click, fillIn, currentURL, visit, waitFor } from '@ember/test-helpers';
+import { click, fillIn, currentURL, visit, waitFor, settled } from '@ember/test-helpers';
 import { module, test } from 'qunit';
 import { setupApplicationTest } from 'ember-qunit';
 import { setupMirage } from 'ember-cli-mirage/test-support';
 import { login } from 'vault/tests/helpers/auth/auth-helpers';
 import { GENERAL } from 'vault/tests/helpers/general-selectors';
 import { runCmd, tokenWithPolicyCmd } from 'vault/tests/helpers/commands';
+import sinon from 'sinon';
 
 const ALIAS_ID_1 = 'aaaabbbb-1d5-5a70-0f3c-4ec61f7b1111';
 const ALIAS_ID_2 = 'ccccdddd-1d5-9b5c-0f3c-4ec61f7b2222';
@@ -289,5 +290,116 @@ module('Acceptance | Identity group alias details | root token', function (hooks
     await visit(`/vault/access/identity/groups/aliases/${this.aliasId}/details`);
     assert.dom(GENERAL.hdsPageHeaderTitle).hasText('root-alias', 'details view renders');
     assert.dom('[data-test-alias-edit-link]').exists('edit action is shown');
+  });
+});
+
+// Page-scoped enrichment for group aliases (WO-019)
+module('Acceptance | /access/identity/groups/aliases | page-scoped enrichment', function (hooks) {
+  setupApplicationTest(hooks);
+  setupMirage(hooks);
+
+  const PAGE_SIZE = 10;
+  const ALIAS_COUNT = 30;
+
+  hooks.beforeEach(async function () {
+    await login();
+
+    this.aliases = Array.from({ length: ALIAS_COUNT }, (_, i) => ({
+      id: `grp-alias-id-${String(i).padStart(2, '0')}`,
+      name: `grp-alias-${String(i).padStart(2, '0')}`,
+      mount_type: 'approle',
+      mount_accessor: `auth_approle_${i}`,
+      mount_path: 'auth/approle/',
+      canonical_id: `group-id-${String(i).padStart(2, '0')}`,
+    }));
+
+    this.server.get('/identity/group-alias/id', () => aliasListResponse(this.aliases));
+    // Missing path keys → capabilities service defaults to allowed (root-like)
+    this.server.post('/sys/capabilities-self', () => ({ data: {}, request_id: 'test' }));
+  });
+
+  hooks.afterEach(function () {
+    this.fetchSpy?.restore();
+  });
+
+  function aliasIdsFromPaths(paths) {
+    return [
+      ...new Set(
+        (paths || [])
+          .filter((p) => typeof p === 'string')
+          .map((p) => {
+            const m = p.match(/identity\/group\/id\/(grp-alias-id-\d+)/);
+            return m ? m[1] : null;
+          })
+          .filter(Boolean)
+      ),
+    ];
+  }
+
+  test('it enriches only page-1 aliases and paginates the full N-item dataset', async function (assert) {
+    const capabilities = this.owner.lookup('service:capabilities');
+    this.fetchSpy = sinon.spy(capabilities, 'fetch');
+
+    await visit('/vault/access/identity/groups/aliases');
+    await settled();
+
+    assert.ok(this.fetchSpy.called, 'capabilities.fetch called on page 1');
+    const page1Ids = aliasIdsFromPaths(this.fetchSpy.lastCall.args[0]);
+    assert.strictEqual(page1Ids.length, PAGE_SIZE, `page 1 enriches exactly ${PAGE_SIZE} aliases`);
+    assert.ok(page1Ids.includes('grp-alias-id-00'), 'page 1 includes first alias');
+    assert.ok(page1Ids.includes('grp-alias-id-09'), 'page 1 includes last page-1 alias');
+    assert.notOk(page1Ids.includes('grp-alias-id-10'), 'page 1 excludes page-2 alias ids');
+
+    assert.dom(GENERAL.tableRow()).exists({ count: PAGE_SIZE }, 'page 1 renders P rows');
+    assert.dom(GENERAL.paginationInfo).includesText(String(ALIAS_COUNT), 'pagination total is full N');
+
+    // Enriched page-1 rows show capability-gated edit/delete (fail-open / root-like caps)
+    await click(`[data-test-popup-menu="${this.aliases[0].name}"]`);
+    assert.dom(GENERAL.menuItem('edit-details')).exists('edit visible for enriched page-1 alias');
+    assert.dom(GENERAL.menuItem('delete')).exists('delete visible for enriched page-1 alias');
+  });
+
+  test('it enriches only page-2 alias IDs after navigation', async function (assert) {
+    const capabilities = this.owner.lookup('service:capabilities');
+    this.fetchSpy = sinon.spy(capabilities, 'fetch');
+
+    await visit('/vault/access/identity/groups/aliases');
+    await settled();
+
+    const page1Ids = new Set(aliasIdsFromPaths(this.fetchSpy.lastCall.args[0]));
+    this.fetchSpy.resetHistory();
+
+    await click(GENERAL.nextPage);
+    await settled();
+
+    assert.true(currentURL().includes('page=2'), 'URL contains page=2');
+    assert.ok(this.fetchSpy.called, 'capabilities.fetch called on page 2');
+
+    const page2Ids = aliasIdsFromPaths(this.fetchSpy.lastCall.args[0]);
+    assert.strictEqual(page2Ids.length, PAGE_SIZE, `page 2 enriches exactly ${PAGE_SIZE} aliases`);
+    assert.ok(page2Ids.includes('grp-alias-id-10'), 'page 2 includes first remaining alias');
+    assert.notOk(
+      page2Ids.some((id) => page1Ids.has(id)),
+      'page 2 enrichment IDs do not overlap page 1'
+    );
+  });
+
+  test('it skips per-alias enrichment when the alias list is empty', async function (assert) {
+    this.server.get('/identity/group-alias/id', () => ({
+      data: { key_info: {}, keys: [] },
+      request_id: 'test',
+    }));
+
+    const capabilities = this.owner.lookup('service:capabilities');
+    this.fetchSpy = sinon.spy(capabilities, 'fetch');
+
+    await visit('/vault/access/identity/groups/aliases');
+    await settled();
+
+    const aliasPaths = (this.fetchSpy.getCalls() || []).flatMap((c) =>
+      aliasIdsFromPaths(c.args[0] || [])
+    );
+    assert.strictEqual(aliasPaths.length, 0, 'no per-alias capability paths when list is empty');
+    assert.dom(GENERAL.emptyStateTitle).exists('empty state renders');
   });
 });
